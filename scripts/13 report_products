@@ -29,12 +29,7 @@ GO
 
 CREATE VIEW gold.report_products AS
 
-WITH ref AS (
-    -- Reference date = last order in the data, not today
-    SELECT MAX(order_date) AS ref_date FROM gold.fact_sales
-),
-
-base_query AS (
+WITH base_query AS (
 /*---------------------------------------------------------------------------
 1) Base Query: Retrieves core columns from fact_sales and dim_products
 ---------------------------------------------------------------------------*/
@@ -51,7 +46,7 @@ SELECT
     p.cost
 FROM gold.fact_sales s
 LEFT JOIN gold.dim_products p
-ON s.product_key = p.product_key
+    ON s.product_key = p.product_key
 WHERE s.order_date IS NOT NULL),
 
 product_aggregation AS (
@@ -69,49 +64,34 @@ SELECT
     COUNT(DISTINCT customer_key) AS total_customers,
     COUNT(DISTINCT order_number) AS total_orders,
     MAX(order_date) AS last_sale_date,
-    -- Lifespan in MONTHS (was years before)
     DATEDIFF(month, MIN(order_date), MAX(order_date)) AS lifespan,
     ROUND(AVG(CAST(sales_amount AS FLOAT) / NULLIF(quantity, 0)), 1) AS avg_selling_price
 FROM base_query
-GROUP BY
+GROUP BY product_key, product_name, category, subcategory, cost)
+
+/*---------------------------------------------------------------------------
+3) Final Query
+---------------------------------------------------------------------------*/
+SELECT
     product_key,
     product_name,
     category,
     subcategory,
-    cost)
-
-/*---------------------------------------------------------------------------
-3) Final Query: Combines all product results into one output
----------------------------------------------------------------------------*/
-SELECT
-    pa.product_key,
-    pa.product_name,
-    pa.category,
-    pa.subcategory,
-    pa.cost,
-    pa.last_sale_date,
-    -- Recency measured from the last order in the data, not GETDATE()
-    DATEDIFF(month, pa.last_sale_date, r.ref_date) AS recency_in_months,
+    cost,
+    last_sale_date,
+    -- Reference date = last order in the data, taken with a subquery
+    DATEDIFF(month, last_sale_date, (SELECT MAX(order_date) FROM gold.fact_sales)) AS recency_in_months,
     CASE
-        WHEN pa.total_sales > 50000 THEN 'High-Performer'
-        WHEN pa.total_sales >= 10000 THEN 'Mid-Range'
+        WHEN total_sales > 50000 THEN 'High-Performer'
+        WHEN total_sales >= 10000 THEN 'Mid-Range'
         ELSE 'Low-Performer'
     END AS product_segment,
-    pa.lifespan,
-    pa.total_orders,
-    pa.total_sales,
-    pa.total_quantity,
-    pa.total_customers,
-    pa.avg_selling_price,
-    -- Average Order Revenue (AOR)
-    CASE
-        WHEN pa.total_orders = 0 THEN 0
-        ELSE pa.total_sales / pa.total_orders
-    END AS avg_order_revenue,
-    -- Average Monthly Revenue
-    CASE
-        WHEN pa.lifespan = 0 THEN pa.total_sales
-        ELSE pa.total_sales / pa.lifespan
-    END AS avg_monthly_revenue
-FROM product_aggregation pa
-CROSS JOIN ref r;
+    lifespan,
+    total_orders,
+    total_sales,
+    total_quantity,
+    total_customers,
+    avg_selling_price,
+    CASE WHEN total_orders = 0 THEN 0 ELSE total_sales / total_orders END AS avg_order_revenue,
+    CASE WHEN lifespan = 0 THEN total_sales ELSE total_sales / lifespan END AS avg_monthly_revenue
+FROM product_aggregation;
